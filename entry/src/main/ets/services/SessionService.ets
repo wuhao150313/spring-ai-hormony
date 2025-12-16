@@ -42,6 +42,22 @@ export class SessionService {
   }
 
   /**
+   * 根据聊天内容自动更新会话标题
+   */
+  static async updateSessionTitleByContent(id: number): Promise<Result<ChatSession>> {
+    return await HttpUtil.put<ChatSession>(`/api/chat/session/${id}/title/auto`, undefined);
+  }
+
+  /**
+   * 更新会话收藏状态
+   */
+  static async updateSessionStar(id: number, star: boolean): Promise<Result<ChatSession>> {
+    const params: Record<string, string> = {};
+    params['star'] = star ? 'true' : 'false';
+    return await HttpUtil.put<ChatSession>(`/api/chat/session/${id}/star`, undefined, params);
+  }
+
+  /**
    * 删除会话
    */
   static async deleteSession(id: number): Promise<Result<boolean>> {

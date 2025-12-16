@@ -2,6 +2,7 @@ import { SessionService } from '../services/SessionService';
 import { ChatSession } from '../models/ChatSession';
 import { ChatMessage } from '../models/ChatMessage';
 import { ResultUtil } from '../models/Result';
+import { Toast } from '../components/Toast';
 import { MessageItem } from '../components/MessageItem';
 import { LoadingView } from '../components/LoadingView';
 import { ChatService } from '../services/ChatService';
@@ -130,6 +131,7 @@ struct ChatPage {
       }
       
       console.info(`[ChatPage] 消息已添加到列表，当前消息数量: ${this.messages.length}`);
+      Toast.showSuccess('消息发送成功');
     } catch (err) {
       console.error(`[ChatPage] 发送消息失败:`, err);
       let errorMsg = '发送失败';
@@ -141,6 +143,7 @@ struct ChatPage {
         errorMsg = `发送失败: ${JSON.stringify(err)}`;
       }
       this.errorMessage = errorMsg;
+      Toast.showError(errorMsg);
       // 恢复输入内容
       this.inputText = content;
     } finally {
@@ -205,20 +208,12 @@ struct ChatPage {
 
       // 发送中提示
       if (this.isSending) {
-        Row() {
-          LoadingProgress()
-            .width(20)
-            .height(20)
-            .color('#007AFF');
-          
-          Text('AI 正在思考...')
-            .fontSize(12)
-            .fontColor('#999999')
-            .margin({ left: 8 });
-        }
-        .width('100%')
-        .justifyContent(FlexAlign.Center)
-        .padding({ top: 8, bottom: 8 });
+        Text('思考中...')
+          .fontSize(12)
+          .fontColor('#999999')
+          .width('100%')
+          .textAlign(TextAlign.Center)
+          .padding({ top: 8, bottom: 8 });
       }
 
       // 输入区域

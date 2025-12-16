@@ -1,6 +1,7 @@
 import { AuthService } from '../services/AuthService';
 import { ResultUtil } from '../models/Result';
 import { StorageUtil } from '../utils/StorageUtil';
+import { Toast } from '../components/Toast';
 import router from '@ohos.router';
 
 /**
@@ -50,6 +51,9 @@ export struct LoginPage {
           console.warn('获取用户信息失败，但不影响登录:', JSON.stringify(err));
         }
         
+        // 登录成功提示
+        Toast.showSuccess('登录成功');
+        
         // 登录成功，通知用户中心刷新，并返回到主页面
         AppStorage.set('refreshUserCenter', Date.now());
         AppStorage.set('targetTabIndex', 4); // 切换到用户中心 Tab
@@ -59,10 +63,14 @@ export struct LoginPage {
           console.error('Failed to navigate:', JSON.stringify(err));
         });
       } else {
-        this.errorMessage = ResultUtil.getErrorMessage(loginResult);
+        const errorMsg = ResultUtil.getErrorMessage(loginResult);
+        this.errorMessage = errorMsg;
+        Toast.showError(`登录失败: ${errorMsg}`);
       }
     } catch (err) {
-      this.errorMessage = `登录失败: ${JSON.stringify(err)}`;
+      const errorMsg = `登录失败: ${JSON.stringify(err)}`;
+      this.errorMessage = errorMsg;
+      Toast.showError(errorMsg);
     } finally {
       this.isLoading = false;
     }
@@ -100,6 +108,9 @@ export struct LoginPage {
           console.warn('获取用户信息失败，但不影响登录:', JSON.stringify(err));
         }
         
+        // 登录成功提示
+        Toast.showSuccess('登录成功');
+        
         // 登录成功，通知用户中心刷新，并返回到主页面
         AppStorage.set('refreshUserCenter', Date.now());
         AppStorage.set('targetTabIndex', 4); // 切换到用户中心 Tab
@@ -109,10 +120,14 @@ export struct LoginPage {
           console.error('Failed to navigate:', JSON.stringify(err));
         });
       } else {
-        this.errorMessage = ResultUtil.getErrorMessage(loginResult);
+        const errorMsg = ResultUtil.getErrorMessage(loginResult);
+        this.errorMessage = errorMsg;
+        Toast.showError(`登录失败: ${errorMsg}`);
       }
     } catch (err) {
-      this.errorMessage = `登录失败: ${JSON.stringify(err)}`;
+      const errorMsg = `登录失败: ${JSON.stringify(err)}`;
+      this.errorMessage = errorMsg;
+      Toast.showError(errorMsg);
     } finally {
       this.isLoading = false;
     }
@@ -130,6 +145,7 @@ export struct LoginPage {
     try {
       const result = await AuthService.sendSmsCode(this.mobile);
       if (ResultUtil.isSuccess(result)) {
+        Toast.showSuccess('验证码已发送');
         // 开始倒计时
         this.countdown = 60;
         const timer = setInterval(() => {
@@ -139,10 +155,14 @@ export struct LoginPage {
           }
         }, 1000);
       } else {
-        this.errorMessage = ResultUtil.getErrorMessage(result);
+        const errorMsg = ResultUtil.getErrorMessage(result);
+        this.errorMessage = errorMsg;
+        Toast.showError(`发送失败: ${errorMsg}`);
       }
     } catch (err) {
-      this.errorMessage = `发送失败: ${JSON.stringify(err)}`;
+      const errorMsg = `发送失败: ${JSON.stringify(err)}`;
+      this.errorMessage = errorMsg;
+      Toast.showError(errorMsg);
     }
   }
 
@@ -166,7 +186,7 @@ export struct LoginPage {
       .alignItems(VerticalAlign.Center);
 
       // 标题
-      Text('AI 智能助手')
+      Text('智能校园登录')
         .fontSize(28)
         .fontWeight(FontWeight.Bold)
         .margin({ top: 40, bottom: 40 });

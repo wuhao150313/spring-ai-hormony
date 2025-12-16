@@ -13,6 +13,7 @@ export interface ChatSession {
   lastMessageTime: string | null;  // ISO 8601 格式
   createTime: string;
   updateTime: string;
+  star?: boolean;  // 收藏状态（可选，后端返回0/1）
   messages?: ChatMessage[];
 }
 

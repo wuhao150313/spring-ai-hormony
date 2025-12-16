@@ -1,5 +1,6 @@
 import { KnowledgeBaseService } from '../services/KnowledgeBaseService';
 import { ResultUtil } from '../models/Result';
+import { Toast } from '../components/Toast';
 import { MarkdownText } from '../components/MarkdownText';
 import router from '@ohos.router';
 
@@ -126,6 +127,7 @@ export struct AgentChatPage {
         if (!answer || answer.trim() === '') {
           console.warn('[AgentChatPage] AI响应为空');
           this.errorMessage = 'AI响应为空，请重试';
+          Toast.showError('AI响应为空，请重试');
           this.removeMessageAt(aiMsgIndex);
           this.isLoading = false;
           return;
@@ -134,17 +136,22 @@ export struct AgentChatPage {
         console.info(`[AgentChatPage] 收到回答，长度: ${answer.length}`);
         this.updateMessageContent(aiMsgIndex, answer);
         this.isLoading = false;
+        Toast.showSuccess('消息发送成功');
       } else {
-        this.errorMessage = ResultUtil.getErrorMessage(result) || '获取回答失败';
+        const errorMsg = ResultUtil.getErrorMessage(result) || '获取回答失败';
+        this.errorMessage = errorMsg;
         console.error(`[AgentChatPage] 获取回答失败: ${this.errorMessage}`);
+        Toast.showError(`查询失败: ${errorMsg}`);
         if (this.messages[aiMsgIndex]?.content === '') {
           this.removeMessageAt(aiMsgIndex);
         }
         this.isLoading = false;
       }
     } catch (err) {
+      const errorMsg = `发送失败: ${err instanceof Error ? err.message : JSON.stringify(err)}`;
       console.error('[AgentChatPage] 发送消息异常:', err);
-      this.errorMessage = `发送失败: ${err instanceof Error ? err.message : JSON.stringify(err)}`;
+      this.errorMessage = errorMsg;
+      Toast.showError(errorMsg);
       if (this.messages[aiMsgIndex]?.content === '') {
         this.removeMessageAt(aiMsgIndex);
       }
@@ -229,20 +236,12 @@ export struct AgentChatPage {
 
       // 加载提示
       if (this.isLoading) {
-        Row() {
-          LoadingProgress()
-            .width(20)
-            .height(20)
-            .color('#007AFF');
-          
-          Text('AI 正在思考...')
-            .fontSize(12)
-            .fontColor('#999999')
-            .margin({ left: 8 });
-        }
-        .width('100%')
-        .justifyContent(FlexAlign.Center)
-        .padding({ top: 8, bottom: 8 });
+        Text('思考中...')
+          .fontSize(12)
+          .fontColor('#999999')
+          .width('100%')
+          .textAlign(TextAlign.Center)
+          .padding({ top: 8, bottom: 8 });
       }
 
       // 错误提示

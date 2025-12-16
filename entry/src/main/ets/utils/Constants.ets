@@ -44,9 +44,9 @@ export class Constants {
    */
   static getAppIdByAgentId(agentId?: number): string {
     if (agentId === 6) {
-      return Constants.DASHSCOPE_WEATHER_APP_ID; // 天气查询助手
+      return Constants.DASHSCOPE_WEATHER_APP_ID; //  天气查询助手
     } else if (agentId === 9) {
-      return Constants.DASHSCOPE_SCHOLARSHIP_APP_ID; // 助学政策助手
+      return Constants.DASHSCOPE_SCHOLARSHIP_APP_ID; //  助学政策助手
     }
     // 其他智能体使用默认APP_ID
     return Constants.DASHSCOPE_APP_ID;

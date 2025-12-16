@@ -7,7 +7,14 @@ import { SessionService } from '../services/SessionService';
 import { ChatSession } from '../models/ChatSession';
 import { DateUtil } from '../utils/DateUtil';
 import { MarkdownText } from '../components/MarkdownText';
+import { OssService } from '../services/OssService';
+import { KnowledgeBaseService } from '../services/KnowledgeBaseService';
+import { Constants } from '../utils/Constants';
+import { ChatService } from '../services/ChatService';
+import { ChatMessage } from '../models/ChatMessage';
+import { Toast } from '../components/Toast';
 import router from '@ohos.router';
+import picker from '@ohos.file.picker';
 
 /**
  * AI 对话页面（Agent）- 启动页
@@ -21,11 +28,15 @@ export struct AIChatPage {
   @State isLoading: boolean = false;
   @State errorMessage: string = '';
   @State isLoggedIn: boolean = false; // 登录状态
+  @State currentSessionId: number = 0; // 当前选中的会话ID
+  @State currentSessionTitle: string = '新会话'; // 当前会话标题
+  @State newSessionTitle: string = ''; // 新建会话标题
 
   @State historyDialogVisible: boolean = false; // 历史对话弹窗
   @State sessions: ChatSession[] = []; // 会话列表
   @State isLoadingSessions: boolean = false; // 加载会话列表状态
   @State sessionTitle: string = '新会话'; // 会话标题
+  @State selectedModel: string = 'default'; // 当前选中的模型
 
   historyDialogController: CustomDialogController | null = null;
 
@@ -144,54 +155,126 @@ export struct AIChatPage {
 
     const userMessage = text;
 
-    // 1) 添加用户消息到列表
-    this.appendMessage({
-      role: 'user',
-      content: userMessage,
-      time: new Date().toISOString()
-    });
+    // 检查是否为特殊问题（本地应答）
+    if (KnowledgeBaseService.isSpecialQuestion(userMessage)) {
+      this.appendMessage({
+        role: 'user',
+        content: userMessage,
+        time: new Date().toISOString()
+      });
+      this.inputText = '';
+      this.appendMessage({
+        role: 'assistant',
+        content: KnowledgeBaseService.getSpecialAnswer(),
+        time: new Date().toISOString()
+      });
+      return;
+    }
 
-    // 2) 清空输入 + 打开 loading
+    // 若还未选择会话，先创建一个新会话
+    if (this.currentSessionId <= 0) {
+      try {
+        const createResult = await SessionService.createSession(this.sessionTitle, this.selectedModel);
+        if (ResultUtil.isSuccess(createResult) && createResult.data && createResult.data.id) {
+          this.currentSessionId = createResult.data.id;
+          this.currentSessionTitle = createResult.data.title || this.sessionTitle;
+          this.sessionTitle = this.currentSessionTitle;
+          Toast.showSuccess('会话创建成功');
+        } else {
+          const errorMsg = ResultUtil.getErrorMessage(createResult);
+          console.warn('[AIChatPage] 创建会话失败:', errorMsg);
+          Toast.showError(`创建会话失败: ${errorMsg}`);
+          // 仍继续，但会话ID无效将导致后续发送失败
+        }
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : JSON.stringify(err);
+        console.error('[AIChatPage] 创建会话异常:', err);
+        Toast.showError(`创建会话失败: ${errorMsg}`);
+      }
+    }
+
+    // 发送并保存消息（绑定 currentSessionId）
     this.inputText = '';
     this.isLoading = true;
     this.errorMessage = '';
-    this.updateSessionTitleNow();
 
-    // 3) 插入 assistant 占位气泡（确保 UI 一定出现）
-    this.appendMessage({
-      role: 'assistant',
-      content: '',
-      time: new Date().toISOString()
-    });
-    const aiMsgIndex = this.messages.length - 1;
-
-    // 4) 调用普通问答接口
     try {
-      console.info(`[AIChatPage] 发送问题: ${userMessage}`);
-      const answer = await AIService.askQuestion(userMessage);
+      if (this.currentSessionId <= 0) {
+        this.errorMessage = '会话创建失败，请重试';
+        this.isLoading = false;
+        return;
+      }
+
+      // 先立即添加用户消息到UI（用户点击发送后立即显示）
+      const userMsgItem: MessageItem = {
+        role: 'user',
+        content: userMessage,
+        time: new Date().toISOString()
+      };
+      this.appendMessage(userMsgItem);
+
+      const useKB = false; // 当前页面未配置类别，默认不使用知识库
+      console.info(`[AIChatPage] 发送问题: ${userMessage}, sessionId=${this.currentSessionId}, model=${this.selectedModel}`);
       
-      // 检查响应是否为空
-      if (!answer || answer.trim() === '') {
-        console.warn('[AIChatPage] AI响应为空');
-        this.errorMessage = 'AI响应为空，请重试';
-              this.removeMessageAt(aiMsgIndex);
-              this.isLoading = false;
-            return;
+      // 调用AI服务获取回复（这会保存用户消息和AI消息到后端）
+      const pair = await ChatService.sendMessageAndGetReply(
+        this.currentSessionId,
+        userMessage,
+        this.selectedModel,
+        useKB
+      );
+
+      // 映射AI消息到前端 MessageItem
+      const aiMsgItem: MessageItem = {
+        role: pair.aiMessage.role || 'assistant',
+        content: pair.aiMessage.content || '',
+        time: pair.aiMessage.createTime || new Date().toISOString()
+      };
+
+      // 追加AI消息到UI（AI回复后显示）
+      this.appendMessage(aiMsgItem);
+      this.isLoading = false;
+
+      // 检测是否为第一条消息（用户消息 + AI消息 = 2条）
+      const isFirstMessage = this.messages.length === 2;
+
+      // 如果是第一条消息，自动更新会话标题
+      if (isFirstMessage && this.currentSessionId > 0) {
+        try {
+          console.info(`[AIChatPage] 第一条消息，自动更新会话标题，sessionId=${this.currentSessionId}`);
+          const updateResult = await SessionService.updateSessionTitleByContent(this.currentSessionId);
+          if (ResultUtil.isSuccess(updateResult) && updateResult.data) {
+            const newTitle = updateResult.data.title || this.currentSessionTitle;
+            this.currentSessionTitle = newTitle;
+            this.sessionTitle = newTitle;
+            console.info(`[AIChatPage] 会话标题已自动更新为: ${newTitle}`);
+          } else {
+            console.warn(`[AIChatPage] 自动更新会话标题失败: ${ResultUtil.getErrorMessage(updateResult)}`);
           }
-          
-      // 更新AI消息内容
-      console.info(`[AIChatPage] 收到回答，长度: ${answer.length}`);
-      console.info(`[AIChatPage] 回答预览: ${answer.substring(0, 100)}...`);
-              this.updateMessageContent(aiMsgIndex, answer);
-              this.isLoading = false;
+        } catch (err) {
+          console.error('[AIChatPage] 自动更新会话标题异常:', err);
+        }
+      }
+      
+      // 发送消息成功提示
+      Toast.showSuccess('消息发送成功');
     } catch (err) {
       console.error('[AIChatPage] 发送消息异常:', err);
-      this.errorMessage = `发送失败: ${err instanceof Error ? err.message : JSON.stringify(err)}`;
-        // 移除空的AI消息
-        if (this.messages[aiMsgIndex]?.content === '') {
-          this.removeMessageAt(aiMsgIndex);
-        }
-        this.isLoading = false;
+      const errorMsg = err instanceof Error ? err.message : JSON.stringify(err);
+      this.errorMessage = `发送失败: ${errorMsg}`;
+      Toast.showError(`发送失败: ${errorMsg}`);
+      
+      // 如果用户消息已显示，添加错误消息作为AI回复
+      if (this.messages.length > 0 && this.messages[this.messages.length - 1].role === 'user') {
+        const errorAiMsg: MessageItem = {
+          role: 'assistant',
+          content: `抱歉，发送失败：${errorMsg}`,
+          time: new Date().toISOString()
+        };
+        this.appendMessage(errorAiMsg);
+      }
+      
+      this.isLoading = false;
     }
   }
 
@@ -244,6 +327,50 @@ export struct AIChatPage {
   }
 
   /**
+   * 刷新历史对话弹窗：关闭 -> 重新拉取 -> 再打开（仅在弹窗已打开时）
+   */
+  async refreshHistoryDialog() {
+    const wasOpen = this.historyDialogVisible;
+    if (wasOpen) {
+      this.closeHistoryDialog();
+    }
+    await this.loadSessions();
+    if (wasOpen) {
+      this.showHistoryDialog();
+    }
+  }
+
+  /**
+   * 根据当前会话ID加载会话详情（包含消息）
+   */
+  async loadSessionDetail() {
+    if (this.currentSessionId <= 0) {
+      return;
+    }
+    this.isLoading = true;
+    try {
+      const result = await SessionService.getSessionDetail(this.currentSessionId);
+      if (ResultUtil.isSuccess(result) && result.data) {
+        const chatMessages: ChatMessage[] = (result.data.messages || []) as ChatMessage[];
+        const msgs: MessageItem[] = chatMessages.map((m: ChatMessage): MessageItem => ({
+          role: m.role ?? 'assistant',
+          content: m.content ?? '',
+          time: m.createTime ?? new Date().toISOString()
+        }));
+        this.messages = msgs;
+        this.currentSessionTitle = result.data.title || this.currentSessionTitle;
+        this.sessionTitle = this.currentSessionTitle;
+      } else {
+        console.warn('[AIChatPage] 加载会话详情失败:', ResultUtil.getErrorMessage(result));
+      }
+    } catch (err) {
+      console.error('[AIChatPage] 加载会话详情异常:', err);
+    } finally {
+      this.isLoading = false;
+    }
+  }
+
+  /**
    * 构建历史对话弹窗内容
    */
   @Builder
@@ -252,11 +379,127 @@ export struct AIChatPage {
       controller: controller,
       sessions: this.sessions,
       isLoading: this.isLoadingSessions,
-      onRefresh: () => {
-        this.loadSessions();
+      newSessionTitle: this.newSessionTitle,
+      onNewSessionTitleChange: (title: string) => {
+        this.newSessionTitle = title;
+      },
+      onCreateSession: async () => {
+        if (this.isLoadingSessions) {
+          return; // 避免重复点击导致多次创建
+        }
+        const title = (this.newSessionTitle || '').trim() || '新会话';
+        this.isLoadingSessions = true;
+        try {
+          const createResult = await SessionService.createSession(title, this.selectedModel);
+          if (ResultUtil.isSuccess(createResult) && createResult.data) {
+            this.currentSessionId = createResult.data.id;
+            this.currentSessionTitle = createResult.data.title || title;
+            this.sessionTitle = this.currentSessionTitle;
+            this.newSessionTitle = '';
+            await this.loadSessions();
+            await this.loadSessionDetail();
+            Toast.showSuccess('会话创建成功');
+            // 创建成功后关闭弹窗，避免用户误以为无响应
+            this.closeHistoryDialog();
+          } else {
+            const errorMsg = ResultUtil.getErrorMessage(createResult);
+            console.warn('[AIChatPage] 创建会话失败:', errorMsg);
+            Toast.showError(`创建会话失败: ${errorMsg}`);
+          }
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : JSON.stringify(err);
+          console.error('[AIChatPage] 创建会话异常:', err);
+          Toast.showError(`创建会话失败: ${errorMsg}`);
+        } finally {
+          this.isLoadingSessions = false;
+        }
       },
       onSessionClick: (session: ChatSession) => {
         this.onSessionClick(session);
+      },
+      onDeleteSession: async (session: ChatSession) => {
+        if (this.isLoadingSessions) {
+          return; // 避免重复删除请求
+        }
+        this.isLoadingSessions = true;
+        try {
+          const delResult = await SessionService.deleteSession(session.id);
+          if (ResultUtil.isSuccess(delResult)) {
+            Toast.showSuccess('会话删除成功');
+            // 如果删除的是当前会话，清空当前状态
+            if (this.currentSessionId === session.id) {
+              this.currentSessionId = 0;
+              this.currentSessionTitle = '新会话';
+              this.sessionTitle = this.currentSessionTitle;
+              this.messages = [];
+            }
+          } else {
+            const errorMsg = ResultUtil.getErrorMessage(delResult);
+            console.warn('[AIChatPage] 删除会话失败:', errorMsg);
+            Toast.showError(`删除会话失败: ${errorMsg}`);
+          }
+          // 执行完删除操作后，重建弹窗，确保实时更新
+          await this.refreshHistoryDialog();
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : JSON.stringify(err);
+          console.error('[AIChatPage] 删除会话异常:', err);
+          Toast.showError(`删除会话失败: ${errorMsg}`);
+          // 异常也刷新弹窗
+          await this.refreshHistoryDialog();
+        } finally {
+          this.isLoadingSessions = false;
+        }
+      },
+      onToggleStar: async (session: ChatSession, star: boolean) => {
+        if (this.isLoadingSessions) {
+          return;
+        }
+        this.isLoadingSessions = true;
+        // 本地先更新，立即反馈高亮/置灰
+        const newSessions: ChatSession[] = [];
+        for (let i = 0; i < this.sessions.length; i++) {
+          const s = this.sessions[i];
+          if (s.id === session.id) {
+            const updated: ChatSession = {
+              id: s.id,
+              title: s.title,
+              userId: s.userId,
+              modelName: s.modelName,
+              status: s.status,
+              lastMessage: s.lastMessage,
+              lastMessageTime: s.lastMessageTime,
+              createTime: s.createTime,
+              updateTime: s.updateTime,
+              star: star,
+              messages: s.messages
+            };
+            newSessions.push(updated);
+          } else {
+            newSessions.push(s);
+          }
+        }
+        this.sessions = newSessions;
+
+        try {
+          const starResult = await SessionService.updateSessionStar(session.id, star);
+          if (ResultUtil.isSuccess(starResult)) {
+            Toast.showSuccess(star ? '已收藏' : '已取消收藏');
+          } else {
+            const errorMsg = ResultUtil.getErrorMessage(starResult);
+            console.warn('[AIChatPage] 收藏操作失败:', errorMsg);
+            Toast.showError(`收藏操作失败: ${errorMsg}`);
+          }
+          // 执行完收藏操作后，重建弹窗，确保实时更新和正确排序
+          await this.refreshHistoryDialog();
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : JSON.stringify(err);
+          console.error('[AIChatPage] 收藏操作异常:', err);
+          Toast.showError(`收藏操作失败: ${errorMsg}`);
+          // 异常也刷新弹窗
+          await this.refreshHistoryDialog();
+        } finally {
+          this.isLoadingSessions = false;
+        }
       },
       onClose: () => {
         this.closeHistoryDialog();
@@ -295,6 +538,7 @@ export struct AIChatPage {
     try {
       dialogController.open();
       console.info('[AIChatPage] 历史对话弹窗已打开');
+      this.historyDialogVisible = true;
     } catch (err) {
       console.error('打开历史对话弹窗失败:', err);
     }
@@ -312,21 +556,368 @@ export struct AIChatPage {
       }
       this.historyDialogController = null;
     }
+    this.historyDialogVisible = false;
   }
 
   /**
    * 点击会话项
    */
-  onSessionClick(session: ChatSession) {
+  async onSessionClick(session: ChatSession) {
     this.closeHistoryDialog();
-    router.pushUrl({
-      url: 'pages/ChatPage',
-      params: {
-        sessionId: session.id
+    // 留在当前页面，直接加载该会话消息
+    try {
+      this.isLoading = true;
+      const result = await SessionService.getSessionDetail(session.id);
+      if (ResultUtil.isSuccess(result) && result.data) {
+        const chatMessages: ChatMessage[] = (result.data.messages || []) as ChatMessage[];
+        const msgs: MessageItem[] = chatMessages.map((m: ChatMessage): MessageItem => ({
+          role: m.role ?? 'assistant',
+          content: m.content ?? '',
+          time: m.createTime ?? new Date().toISOString()
+        }));
+        this.messages = msgs;
+        this.currentSessionId = session.id;
+        this.currentSessionTitle = session.title || '新会话';
+        this.sessionTitle = this.currentSessionTitle;
+      } else {
+        console.warn('[AIChatPage] 加载会话详情失败:', ResultUtil.getErrorMessage(result));
       }
-    }).catch((err: Error) => {
-      console.error('Failed to navigate:', JSON.stringify(err));
+    } catch (err) {
+      console.error('[AIChatPage] 加载历史会话失败:', err);
+    } finally {
+      this.isLoading = false;
+    }
+  }
+
+  /**
+   * 处理切换模型
+   */
+  async handleSwitchModel() {
+    const models = ['default', 'qwen-max', 'qwen-plus', 'qwen-turbo'];
+    const currentIndex = models.indexOf(this.selectedModel);
+    const nextModel = models[(currentIndex + 1) % models.length];
+    this.selectedModel = nextModel;
+    
+    try {
+      const result = await AIService.switchModel(nextModel);
+      this.appendMessage({
+        role: 'assistant',
+        content: `已切换到模型: ${nextModel}\n${result}`,
+        time: new Date().toISOString()
+      });
+    } catch (err) {
+      this.errorMessage = `切换模型失败: ${err instanceof Error ? err.message : JSON.stringify(err)}`;
+    }
+  }
+
+  /**
+   * 处理联网搜索
+   */
+  async handleWebSearch() {
+    if (!this.inputText.trim()) {
+      this.errorMessage = '请先输入要搜索的问题';
+      return;
+    }
+    
+    this.isLoading = true;
+    this.errorMessage = '';
+    
+    const userMessage = this.inputText;
+    this.inputText = '';
+    
+    this.appendMessage({
+      role: 'user',
+      content: `[联网搜索] ${userMessage}`,
+      time: new Date().toISOString()
     });
+    
+    this.appendMessage({
+      role: 'assistant',
+      content: '',
+      time: new Date().toISOString()
+    });
+    const aiMsgIndex = this.messages.length - 1;
+    
+    try {
+      const result = await AIService.webSearch(userMessage);
+      this.updateMessageContent(aiMsgIndex, result);
+      this.isLoading = false;
+    } catch (err) {
+      this.errorMessage = `联网搜索失败: ${err instanceof Error ? err.message : JSON.stringify(err)}`;
+      this.removeMessageAt(aiMsgIndex);
+      this.isLoading = false;
+    }
+  }
+
+  /**
+   * 处理图片分析
+   */
+  async handleImageAnalyze() {
+    try {
+      // 打开文件选择器
+      const photoPicker = new picker.PhotoViewPicker();
+      const photoSelectOptions = new picker.PhotoSelectOptions();
+      photoSelectOptions.MIMEType = picker.PhotoViewMIMETypes.IMAGE_TYPE;
+      photoSelectOptions.maxSelectNumber = 1;
+      
+      const photoSelectResult = await photoPicker.select(photoSelectOptions);
+      
+      if (photoSelectResult && photoSelectResult.photoUris && photoSelectResult.photoUris.length > 0) {
+        const fileUri = photoSelectResult.photoUris[0];
+        console.info(`[AIChatPage] 选择的图片URI: ${fileUri}`);
+        
+        this.isLoading = true;
+        this.errorMessage = '';
+        
+        // 添加用户消息
+        const prompt = this.inputText.trim() || '请分析这张图片';
+        this.appendMessage({
+          role: 'user',
+          content: `[图片分析] ${prompt}`,
+          time: new Date().toISOString()
+        });
+        
+        this.inputText = '';
+        
+        // 添加AI占位消息
+        this.appendMessage({
+          role: 'assistant',
+          content: '',
+          time: new Date().toISOString()
+        });
+        const aiMsgIndex = this.messages.length - 1;
+        
+        try {
+          // 上传文件到OSS
+          const uploadResult = await OssService.uploadFile(fileUri);
+          if (!ResultUtil.isSuccess(uploadResult) || !uploadResult.data) {
+            const errorMsg = ResultUtil.getErrorMessage(uploadResult);
+            this.errorMessage = `文件上传失败: ${errorMsg}`;
+            Toast.showError(`文件上传失败: ${errorMsg}`);
+            this.removeMessageAt(aiMsgIndex);
+            this.isLoading = false;
+            return;
+          }
+          
+          const ossUrl = uploadResult.data;
+          console.info(`[AIChatPage] OSS上传成功，URL: ${ossUrl}`);
+          Toast.showSuccess('文件上传成功');
+          
+          // 调用图片分析接口
+          const analyzeResult = await AIService.analyzeImageByUrl(prompt, ossUrl);
+          this.updateMessageContent(aiMsgIndex, analyzeResult);
+          this.isLoading = false;
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : JSON.stringify(err);
+          this.errorMessage = `图片分析失败: ${errorMsg}`;
+          Toast.showError(`图片分析失败: ${errorMsg}`);
+          this.removeMessageAt(aiMsgIndex);
+          this.isLoading = false;
+        }
+      } else {
+        console.info('[AIChatPage] 用户取消了图片选择');
+      }
+    } catch (err) {
+      console.error('[AIChatPage] 打开文件选择器失败:', err);
+      this.errorMessage = `打开文件选择器失败: ${err instanceof Error ? err.message : JSON.stringify(err)}`;
+    }
+  }
+
+  /**
+   * 处理课程推荐
+   */
+  async handleCourseRecommend() {
+    if (!this.inputText.trim()) {
+      this.errorMessage = '请输入您的学习水平和已完成的课程（格式：学习水平|已完成课程，逗号分隔）';
+      return;
+    }
+    
+    const parts = this.inputText.split('|');
+    if (parts.length < 2) {
+      this.errorMessage = '请输入格式：学习水平|已完成课程（逗号分隔）';
+      return;
+    }
+    
+    const userLevel = parts[0].trim();
+    const completedCourses = parts[1].split(',').map(c => c.trim()).filter(c => c);
+    
+    this.isLoading = true;
+    this.errorMessage = '';
+    
+    this.appendMessage({
+      role: 'user',
+      content: `[课程推荐] 水平: ${userLevel}, 已完成: ${completedCourses.join(', ')}`,
+      time: new Date().toISOString()
+    });
+    
+    this.inputText = '';
+    
+    this.appendMessage({
+      role: 'assistant',
+      content: '',
+      time: new Date().toISOString()
+    });
+    const aiMsgIndex = this.messages.length - 1;
+    
+    try {
+      const result = await AIService.recommendCourses(userLevel, completedCourses);
+      if (ResultUtil.isSuccess(result) && result.data) {
+        const courses = result.data.join('\n');
+        this.updateMessageContent(aiMsgIndex, `推荐课程：\n${courses}`);
+      } else {
+        this.errorMessage = ResultUtil.getErrorMessage(result) || '课程推荐失败';
+        this.removeMessageAt(aiMsgIndex);
+      }
+      this.isLoading = false;
+    } catch (err) {
+      this.errorMessage = `课程推荐失败: ${err instanceof Error ? err.message : JSON.stringify(err)}`;
+      this.removeMessageAt(aiMsgIndex);
+      this.isLoading = false;
+    }
+  }
+
+  /**
+   * 处理作业批改
+   */
+  async handleHomeworkReview() {
+    if (!this.inputText.trim()) {
+      this.errorMessage = '请输入作业题目和答案（格式：题目|答案）';
+      return;
+    }
+    
+    const parts = this.inputText.split('|');
+    if (parts.length < 2) {
+      this.errorMessage = '请输入格式：作业题目|学生答案';
+      return;
+    }
+    
+    const taskDescription = parts[0].trim();
+    const studentAnswer = parts[1].trim();
+    
+    this.isLoading = true;
+    this.errorMessage = '';
+    
+    this.appendMessage({
+      role: 'user',
+      content: `[作业批改] 题目: ${taskDescription}`,
+      time: new Date().toISOString()
+    });
+    
+    this.inputText = '';
+    
+    this.appendMessage({
+      role: 'assistant',
+      content: '',
+      time: new Date().toISOString()
+    });
+    const aiMsgIndex = this.messages.length - 1;
+    
+    try {
+      const result = await AIService.reviewHomework(taskDescription, studentAnswer);
+      if (ResultUtil.isSuccess(result) && result.data) {
+        const review = result.data;
+        const reviewText = `评分: ${review.score || 'N/A'}\n总结: ${review.summary || 'N/A'}\n优点: ${review.strengths || 'N/A'}\n不足: ${review.weaknesses || 'N/A'}\n建议: ${review.suggestions || 'N/A'}`;
+        this.updateMessageContent(aiMsgIndex, reviewText);
+      } else {
+        this.errorMessage = ResultUtil.getErrorMessage(result) || '作业批改失败';
+        this.removeMessageAt(aiMsgIndex);
+      }
+      this.isLoading = false;
+    } catch (err) {
+      this.errorMessage = `作业批改失败: ${err instanceof Error ? err.message : JSON.stringify(err)}`;
+      this.removeMessageAt(aiMsgIndex);
+      this.isLoading = false;
+    }
+  }
+
+  /**
+   * 处理课程总结
+   */
+  async handleCourseSummary() {
+    if (!this.inputText.trim()) {
+      this.errorMessage = '请输入课程内容';
+      return;
+    }
+    
+    const courseContent = this.inputText.trim();
+    
+    this.isLoading = true;
+    this.errorMessage = '';
+    
+    this.appendMessage({
+      role: 'user',
+      content: `[课程总结] ${courseContent.substring(0, 50)}...`,
+      time: new Date().toISOString()
+    });
+    
+    this.inputText = '';
+    
+    this.appendMessage({
+      role: 'assistant',
+      content: '',
+      time: new Date().toISOString()
+    });
+    const aiMsgIndex = this.messages.length - 1;
+    
+    try {
+      const result = await AIService.summarizeCourse(courseContent);
+      if (ResultUtil.isSuccess(result) && result.data) {
+        this.updateMessageContent(aiMsgIndex, result.data);
+      } else {
+        this.errorMessage = ResultUtil.getErrorMessage(result) || '课程总结失败';
+        this.removeMessageAt(aiMsgIndex);
+      }
+      this.isLoading = false;
+    } catch (err) {
+      this.errorMessage = `课程总结失败: ${err instanceof Error ? err.message : JSON.stringify(err)}`;
+      this.removeMessageAt(aiMsgIndex);
+      this.isLoading = false;
+    }
+  }
+
+  /**
+   * 处理生成思维导图
+   */
+  async handleGenerateMindMap() {
+    if (!this.inputText.trim()) {
+      this.errorMessage = '请输入课程内容';
+      return;
+    }
+    
+    const courseContent = this.inputText.trim();
+    
+    this.isLoading = true;
+    this.errorMessage = '';
+    
+    this.appendMessage({
+      role: 'user',
+      content: `[生成思维导图] ${courseContent.substring(0, 50)}...`,
+      time: new Date().toISOString()
+    });
+    
+    this.inputText = '';
+    
+    this.appendMessage({
+      role: 'assistant',
+      content: '',
+      time: new Date().toISOString()
+    });
+    const aiMsgIndex = this.messages.length - 1;
+    
+    try {
+      const result = await AIService.generateMindMap(courseContent);
+      if (ResultUtil.isSuccess(result) && result.data) {
+        this.updateMessageContent(aiMsgIndex, result.data);
+      } else {
+        this.errorMessage = ResultUtil.getErrorMessage(result) || '生成思维导图失败';
+        this.removeMessageAt(aiMsgIndex);
+      }
+      this.isLoading = false;
+    } catch (err) {
+      this.errorMessage = `生成思维导图失败: ${err instanceof Error ? err.message : JSON.stringify(err)}`;
+      this.removeMessageAt(aiMsgIndex);
+      this.isLoading = false;
+    }
   }
 
   build() {
@@ -409,20 +1000,12 @@ export struct AIChatPage {
 
       // 加载提示
       if (this.isLoading) {
-        Row() {
-          LoadingProgress()
-            .width(20)
-            .height(20)
-            .color('#007AFF');
-          
-          Text('AI 正在思考...')
-            .fontSize(12)
-            .fontColor('#999999')
-            .margin({ left: 8 });
-        }
-        .width('100%')
-        .justifyContent(FlexAlign.Center)
-        .padding({ top: 8, bottom: 8 });
+        Text('思考中...')
+          .fontSize(12)
+          .fontColor('#999999')
+          .width('100%')
+          .textAlign(TextAlign.Center)
+          .padding({ top: 8, bottom: 8 });
       }
 
       // 错误提示
@@ -434,6 +1017,101 @@ export struct AIChatPage {
           .textAlign(TextAlign.Center)
           .padding({ left: 16, right: 16, top: 4, bottom: 4 });
       }
+
+      // 功能按钮区域
+      Scroll() {
+        Row() {
+          Button('切换模型')
+            .fontSize(12)
+            .height(32)
+            .padding({ left: 12, right: 12 })
+            .backgroundColor('#F0F0F0')
+            .fontColor('#333333')
+            .borderRadius(16)
+            .margin({ right: 8 })
+            .onClick(() => {
+              this.handleSwitchModel();
+            });
+          
+          Button('联网搜索')
+            .fontSize(12)
+            .height(32)
+            .padding({ left: 12, right: 12 })
+            .backgroundColor('#F0F0F0')
+            .fontColor('#333333')
+            .borderRadius(16)
+            .margin({ right: 8 })
+            .onClick(() => {
+              this.handleWebSearch();
+            });
+          
+          Button('图片分析')
+            .fontSize(12)
+            .height(32)
+            .padding({ left: 12, right: 12 })
+            .backgroundColor('#F0F0F0')
+            .fontColor('#333333')
+            .borderRadius(16)
+            .margin({ right: 8 })
+            .onClick(() => {
+              this.handleImageAnalyze();
+            });
+          
+          Button('课程推荐')
+            .fontSize(12)
+            .height(32)
+            .padding({ left: 12, right: 12 })
+            .backgroundColor('#F0F0F0')
+            .fontColor('#333333')
+            .borderRadius(16)
+            .margin({ right: 8 })
+            .onClick(() => {
+              this.handleCourseRecommend();
+            });
+          
+          Button('作业批改')
+            .fontSize(12)
+            .height(32)
+            .padding({ left: 12, right: 12 })
+            .backgroundColor('#F0F0F0')
+            .fontColor('#333333')
+            .borderRadius(16)
+            .margin({ right: 8 })
+            .onClick(() => {
+              this.handleHomeworkReview();
+            });
+          
+          Button('课程总结')
+            .fontSize(12)
+            .height(32)
+            .padding({ left: 12, right: 12 })
+            .backgroundColor('#F0F0F0')
+            .fontColor('#333333')
+            .borderRadius(16)
+            .margin({ right: 8 })
+            .onClick(() => {
+              this.handleCourseSummary();
+            });
+          
+          Button('生成思维导图')
+            .fontSize(12)
+            .height(32)
+            .padding({ left: 12, right: 12 })
+            .backgroundColor('#F0F0F0')
+            .fontColor('#333333')
+            .borderRadius(16)
+            .onClick(() => {
+              this.handleGenerateMindMap();
+            });
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+        .justifyContent(FlexAlign.Start);
+      }
+      .width('100%')
+      .height(56)
+      .scrollBar(BarState.Off)
+      .backgroundColor('#FFFFFF');
 
       // 输入区域
       Row() {
@@ -474,9 +1152,42 @@ struct HistoryDialog {
   controller: CustomDialogController;
   sessions: ChatSession[] = [];
   isLoading: boolean = false;
+  newSessionTitle: string = '';
+  onNewSessionTitleChange: (title: string) => void = () => {};
+  onCreateSession: () => void = () => {};
   onRefresh: () => void = () => {};
   onSessionClick: (session: ChatSession) => void = () => {};
+  onDeleteSession: (session: ChatSession) => void = () => {};
+  onToggleStar: (session: ChatSession, star: boolean) => void = () => {};
   onClose: () => void = () => {};
+
+  /**
+   * 左滑动作（历史列表）- 收藏 / 删除
+   */
+  @Builder
+  swipeActionBuilder(session: ChatSession) {
+    Row() {
+      Button((!!session.star) ? '取消收藏' : '收藏')
+        .fontSize(14)
+        .fontColor(Color.White)
+        .backgroundColor('#FF9F0A')
+        .padding({ left: 16, right: 16 })
+        .onClick(() => {
+          this.onToggleStar(session, !(!!session.star));
+        });
+
+      Button('删除')
+        .fontSize(14)
+        .fontColor(Color.White)
+        .backgroundColor('#FF3B30')
+        .padding({ left: 20, right: 20 })
+        .onClick(() => {
+          this.onDeleteSession(session);
+        });
+    }
+    .height('100%')
+    .justifyContent(FlexAlign.Center);
+  }
 
   build() {
     Column() {
@@ -503,6 +1214,28 @@ struct HistoryDialog {
       .justifyContent(FlexAlign.SpaceBetween)
       .alignItems(VerticalAlign.Center)
       .border({ width: { bottom: 1 }, color: '#E5E5E5' });
+
+      // 新建会话输入与按钮
+      Column() {
+        TextInput({ placeholder: '输入会话名称（可选）', text: this.newSessionTitle })
+          .width('100%')
+          .height(40)
+          .backgroundColor('#F5F5F5')
+          .borderRadius(8)
+          .padding({ left: 12, right: 12 })
+          .margin({ left: 16, right: 16, top: 8 })
+          .onChange((value: string) => {
+            this.onNewSessionTitleChange(value);
+          });
+
+        Button('新建会话')
+          .width('100%')
+          .height(40)
+          .margin({ left: 16, right: 16, top: 8 })
+          .onClick(() => {
+            this.onCreateSession();
+          });
+      }
 
       // 内容区域
       if (this.isLoading) {
@@ -538,9 +1271,15 @@ struct HistoryDialog {
                 session: session,
                 onItemClick: () => {
                   this.onSessionClick(session);
+                },
+                onDelete: () => {
+                  this.onDeleteSession(session);
                 }
               });
             }
+            .swipeAction({
+              end: () => this.swipeActionBuilder(session)
+            })
           }, (session: ChatSession) => session.id.toString());
         }
         .width('100%')
@@ -548,14 +1287,6 @@ struct HistoryDialog {
         .padding({ left: 16, right: 16, top: 8 });
       }
 
-      // 刷新按钮
-      Button('刷新')
-        .width('100%')
-        .height(44)
-        .margin({ left: 16, right: 16, bottom: 16 })
-        .onClick(() => {
-          this.onRefresh();
-        });
     }
     .width('100%')
     .height(600)
@@ -571,6 +1302,7 @@ struct HistoryDialog {
 struct HistorySessionItem {
   @Prop session: ChatSession;
   onItemClick: () => void = () => {};
+  onDelete: () => void = () => {};
 
   build() {
     Row() {
@@ -608,7 +1340,7 @@ struct HistorySessionItem {
       .layoutWeight(1);
     }
     .width('100%')
-    .backgroundColor('#F5F5F5')
+    .backgroundColor(this.session.star ? '#FFF4E5' : '#F5F5F5')
     .borderRadius(8)
     .margin({ bottom: 8 })
     .onClick(() => {

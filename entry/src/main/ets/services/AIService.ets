@@ -36,14 +36,16 @@ export class AIService {
       userId,
       message
     };
-    return await HttpUtil.post<AssistantResponse>('/api/v2/chat', request);
+    // 对应后端 StudyAgentController：/api/study/chat
+    return await HttpUtil.post<AssistantResponse>('/api/study/chat', request);
   }
 
   /**
    * 获取对话历史
    */
   static async getChatHistory(userId: string): Promise<Result<ChatHistoryResponse>> {
-    return await HttpUtil.get<ChatHistoryResponse>(`/api/v2/history/${userId}`);
+    // 对应后端 StudyAgentController：/api/study/history/{userId}
+    return await HttpUtil.get<ChatHistoryResponse>(`/api/study/history/${userId}`);
   }
 
   /**
@@ -150,7 +152,7 @@ export class AIService {
     return await HttpUtil.post<string>('/ai/summary/course', request);
   }
 
-  /**
+  /**：
    * 生成思维导图
    */
   static async generateMindMap(courseContent: string): Promise<Result<string>> {

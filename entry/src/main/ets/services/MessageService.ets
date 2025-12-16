@@ -23,7 +23,7 @@ export class MessageService {
       content,
       webSearch
     };
-    return await HttpUtil.post<ChatMessage>('/api/chat/message/user', request);
+    return await HttpUtil.post<ChatMessage>('/api/chat/message/save/user', request);
   }
 
   /**
@@ -48,7 +48,7 @@ export class MessageService {
       thinkingContent,
       webSearch
     };
-    return await HttpUtil.post<ChatMessage>('/api/chat/message/assistant', request);
+    return await HttpUtil.post<ChatMessage>('/api/chat/message/save/assistant', request);
   }
 }
 

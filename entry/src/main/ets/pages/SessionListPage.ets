@@ -1,6 +1,7 @@
 import { SessionService } from '../services/SessionService';
 import { ChatSession } from '../models/ChatSession';
 import { ResultUtil } from '../models/Result';
+import { Toast } from '../components/Toast';
 import { SessionItem } from '../components/SessionItem';
 import { LoadingView } from '../components/LoadingView';
 import { EmptyView } from '../components/EmptyView';
@@ -151,16 +152,19 @@ export struct SessionListPage {
       const result = await SessionService.deleteSession(sessionIdToDelete);
       if (ResultUtil.isSuccess(result)) {
         console.info(`[SessionListPage] 会话删除成功，重新加载列表`);
+        Toast.showSuccess('会话删除成功');
         await this.loadSessions();
       } else {
         const errorMsg = ResultUtil.getErrorMessage(result);
         this.errorMessage = errorMsg || '删除失败';
         console.error(`[SessionListPage] 删除会话失败: ${errorMsg}`);
+        Toast.showError(`删除失败: ${errorMsg}`);
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : `删除失败: ${JSON.stringify(err)}`;
       this.errorMessage = errorMsg;
       console.error(`[SessionListPage] 删除会话异常:`, err);
+      Toast.showError(errorMsg);
     }
   }
 

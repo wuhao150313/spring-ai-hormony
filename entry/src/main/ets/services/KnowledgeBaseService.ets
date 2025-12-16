@@ -25,7 +25,7 @@ export class KnowledgeBaseService {
    * 获取特殊问题的标准回答
    */
   static getSpecialAnswer(): string {
-    return '您好，我是依托default模型的智能助手，在Cursor IDE中为您提供代码编写和问题解答服务，你可以直接告诉我你的需求。';
+    return '我是由default模型支持的智能助手，专为Cursor IDE设计，可以帮您解决各类编程难题，请告诉我你需要什么帮助？';
   }
 
   /**

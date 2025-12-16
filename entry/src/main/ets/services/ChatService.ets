@@ -30,89 +30,7 @@ export class ChatService {
       throw new Error('用户未登录，请先登录');
     }
 
-    // 如果指定使用知识库，则优先调用DashScope知识库API（校园健康助手）
-    let aiReply = '';
-    let aiResponse: AssistantResponse | null = null;
-    
-    try {
-      if (useKnowledgeBase) {
-        console.info(`[ChatService] 尝试调用知识库API，message: ${content.substring(0, 100)}`);
-        const kbResult = await KnowledgeBaseService.queryKnowledgeBase(content);
-        
-        if (ResultUtil.isSuccess(kbResult) && kbResult.data) {
-          aiReply = kbResult.data;
-          console.info(`[ChatService] 知识库回复成功，长度: ${aiReply.length}`);
-          
-          // 构造一个AssistantResponse对象以保持兼容性
-          aiResponse = {
-            userId: userId,
-            threadId: null,
-            answer: aiReply,
-            suggestion: '请根据你的需求，给出一个建议',
-            type: 'general',
-            needsFurtherHelp: false
-          };
-        } else {
-          console.warn(`[ChatService] 知识库调用失败，fallback到AI服务: ${ResultUtil.getErrorMessage(kbResult)}`);
-          // Fallback到原来的AI服务
-          throw new Error('知识库调用失败，使用fallback');
-        }
-      } else {
-        console.info(`[ChatService] 调用AI服务，userId: ${userId}, message: ${content.substring(0, 100)}`);
-        const result = await AIService.advancedChat(userId, content);
-        console.info(`[ChatService] AI服务响应:`, JSON.stringify(result).substring(0, 200));
-        
-        if (ResultUtil.isSuccess(result)) {
-          aiResponse = result.data;
-          if (aiResponse && aiResponse.answer) {
-            aiReply = aiResponse.answer;
-            console.info(`[ChatService] AI回复成功，长度: ${aiReply.length}`);
-          } else {
-            const errorMsg = 'AI没有返回有效回复';
-            console.error(`[ChatService] ${errorMsg}，响应数据:`, JSON.stringify(result.data));
-            throw new Error(errorMsg);
-          }
-        } else {
-          const errorMsg = ResultUtil.getErrorMessage(result);
-          console.error(`[ChatService] AI服务调用失败: code=${result.code}, message=${errorMsg}`);
-          throw new Error(`AI服务调用失败: ${errorMsg}`);
-        }
-      }
-    } catch (err) {
-      // 如果知识库调用失败或未启用，则使用原来的AI服务作为兜底
-      console.info(`[ChatService] 知识库调用异常或未启用，fallback到AI服务:`, err);
-      try {
-        console.info(`[ChatService] 调用AI服务，userId: ${userId}, message: ${content.substring(0, 100)}`);
-        const result = await AIService.advancedChat(userId, content);
-        console.info(`[ChatService] AI服务响应:`, JSON.stringify(result).substring(0, 200));
-        
-        if (ResultUtil.isSuccess(result)) {
-          aiResponse = result.data;
-          if (aiResponse && aiResponse.answer) {
-            aiReply = aiResponse.answer;
-            console.info(`[ChatService] AI回复成功，长度: ${aiReply.length}`);
-          } else {
-            const errorMsg = 'AI没有返回有效回复';
-            console.error(`[ChatService] ${errorMsg}，响应数据:`, JSON.stringify(result.data));
-            throw new Error(errorMsg);
-          }
-        } else {
-          const errorMsg = ResultUtil.getErrorMessage(result);
-          console.error(`[ChatService] AI服务调用失败: code=${result.code}, message=${errorMsg}`);
-          throw new Error(`AI服务调用失败: ${errorMsg}`);
-        }
-      } catch (aiErr) {
-        console.error(`[ChatService] AI服务异常:`, aiErr);
-        // 重新抛出异常，让调用者处理
-        if (aiErr instanceof Error) {
-          throw aiErr;
-        } else {
-          throw new Error(`AI服务异常: ${JSON.stringify(aiErr)}`);
-        }
-      }
-    }
-
-    // 保存用户消息到后端
+    // 先保存用户消息到后端（即便后续AI失败也要落表）
     let userMessage: ChatMessage;
     try {
       console.info(`[ChatService] 保存用户消息到后端...`);
@@ -126,7 +44,6 @@ export class ChatService {
         userMessage = userMessageResult.data;
         console.info(`[ChatService] 用户消息保存成功，ID: ${userMessage.id}`);
       } else {
-        // 如果保存失败，创建临时消息对象
         console.warn(`[ChatService] 用户消息保存失败，使用临时消息: ${ResultUtil.getErrorMessage(userMessageResult)}`);
         userMessage = {
           id: Date.now(),
@@ -146,7 +63,6 @@ export class ChatService {
       }
     } catch (err) {
       console.error(`[ChatService] 保存用户消息异常:`, err);
-      // 如果保存失败，创建临时消息对象
       userMessage = {
         id: Date.now(),
         sessionId: sessionId,
@@ -164,7 +80,50 @@ export class ChatService {
       };
     }
 
-    // 保存AI回复消息到后端
+    // 再调用AI/知识库；失败则把错误文本当作AI回复保存
+    let aiReply = '';
+    let aiResponse: AssistantResponse | null = null;
+    try {
+      if (useKnowledgeBase) {
+        console.info(`[ChatService] 尝试调用知识库API，message: ${content.substring(0, 100)}`);
+        const kbResult = await KnowledgeBaseService.queryKnowledgeBase(content);
+        if (ResultUtil.isSuccess(kbResult) && kbResult.data) {
+          aiReply = kbResult.data;
+          aiResponse = {
+            userId: userId,
+            threadId: null,
+            answer: aiReply,
+            suggestion: '请根据你的需求，给出一个建议',
+            type: 'general',
+            needsFurtherHelp: false
+          };
+          console.info(`[ChatService] 知识库回复成功，长度: ${aiReply.length}`);
+        } else {
+          throw new Error(ResultUtil.getErrorMessage(kbResult) || '知识库调用失败');
+        }
+      } else {
+        console.info(`[ChatService] 调用AI服务，userId: ${userId}, message: ${content.substring(0, 100)}`);
+        const result = await AIService.advancedChat(userId, content);
+        console.info(`[ChatService] AI服务响应:`, JSON.stringify(result).substring(0, 200));
+        if (ResultUtil.isSuccess(result)) {
+          aiResponse = result.data;
+          if (aiResponse && aiResponse.answer) {
+            aiReply = aiResponse.answer;
+            console.info(`[ChatService] AI回复成功，长度: ${aiReply.length}`);
+          } else {
+            throw new Error('AI没有返回有效回复');
+          }
+        } else {
+          throw new Error(ResultUtil.getErrorMessage(result) || 'AI服务调用失败');
+        }
+      }
+    } catch (err) {
+      console.error(`[ChatService] AI服务异常，使用错误提示作为回复:`, err);
+      aiReply = err instanceof Error ? err.message : JSON.stringify(err);
+      aiResponse = null;
+    }
+
+    // 保存AI回复消息到后端（即便AI失败也写入错误信息）
     let aiMessage: ChatMessage;
     try {
       console.info(`[ChatService] 保存AI回复消息到后端...`);

@@ -2,6 +2,7 @@ import { SessionService } from '../services/SessionService';
 import { ModelService } from '../services/ModelService';
 import { AIModel } from '../models/AIModel';
 import { ResultUtil } from '../models/Result';
+import { Toast } from '../components/Toast';
 import { Constants } from '../utils/Constants';
 import router from '@ohos.router';
 
@@ -54,14 +55,19 @@ struct SessionCreatePage {
     try {
       const result = await SessionService.createSession(this.title || '新会话', this.selectedModel);
       if (ResultUtil.isSuccess(result)) {
+        Toast.showSuccess('会话创建成功');
         // 返回上一页
         router.back();
         // 注意：页面返回后会在 onPageShow 中刷新列表
       } else {
-        this.errorMessage = ResultUtil.getErrorMessage(result);
+        const errorMsg = ResultUtil.getErrorMessage(result);
+        this.errorMessage = errorMsg;
+        Toast.showError(`创建失败: ${errorMsg}`);
       }
     } catch (err) {
-      this.errorMessage = `创建失败: ${JSON.stringify(err)}`;
+      const errorMsg = `创建失败: ${JSON.stringify(err)}`;
+      this.errorMessage = errorMsg;
+      Toast.showError(errorMsg);
     } finally {
       this.isLoading = false;
     }

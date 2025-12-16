@@ -2,6 +2,7 @@ import { AuthService } from '../services/AuthService';
 import { UserInfoVO } from '../models/UserInfoVO';
 import { StorageUtil } from '../utils/StorageUtil';
 import { ResultUtil } from '../models/Result';
+import { Toast } from '../components/Toast';
 import router from '@ohos.router';
 
 /**
@@ -12,6 +13,7 @@ export struct UserCenterPage {
   @State isLoggedIn: boolean = false;
   @State userInfo: UserInfoVO | null = null;
   @State isLoading: boolean = false;
+  @State avatarLoadFailed: boolean = false;
   @StorageLink('refreshUserCenter') refreshTrigger: number = 0;
   lastRefreshTrigger: number = 0;
 
@@ -52,8 +54,11 @@ export struct UserCenterPage {
           const result = await AuthService.getCurrentUserInfo();
           if (ResultUtil.isSuccess(result) && result.data) {
             this.userInfo = result.data;
+            console.info('[UserCenterPage] 获取用户信息成功，avatar:', result.data.avatar);
             // 保存到本地
             await StorageUtil.saveUserInfo(result.data);
+          } else {
+            console.warn('[UserCenterPage] 获取用户信息失败:', ResultUtil.getErrorMessage(result));
           }
         } catch (err) {
           console.warn('[UserCenterPage] 获取用户信息失败，使用本地数据:', JSON.stringify(err));
@@ -87,11 +92,19 @@ export struct UserCenterPage {
    */
   async handleLogout() {
     try {
-      await AuthService.logout();
-      this.isLoggedIn = false;
-      this.userInfo = null;
+      const result = await AuthService.logout();
+      if (ResultUtil.isSuccess(result)) {
+        Toast.showSuccess('退出登录成功');
+        this.isLoggedIn = false;
+        this.userInfo = null;
+      } else {
+        const errorMsg = ResultUtil.getErrorMessage(result);
+        Toast.showError(`退出登录失败: ${errorMsg}`);
+      }
     } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : JSON.stringify(err);
       console.error('[UserCenterPage] 退出登录失败:', err);
+      Toast.showError(`退出登录失败: ${errorMsg}`);
     }
   }
 
@@ -155,7 +168,7 @@ export struct UserCenterPage {
               // 用户信息区域
               Column() {
                 // 头像
-                if (this.userInfo?.avatar && this.userInfo.avatar.trim() !== '') {
+                if (this.userInfo?.avatar && this.userInfo.avatar.trim() !== '' && !this.avatarLoadFailed) {
                   Image(this.userInfo.avatar)
                     .width(100)
                     .height(100)
@@ -163,8 +176,12 @@ export struct UserCenterPage {
                     .objectFit(ImageFit.Cover)
                     .margin({ top: 20, bottom: 16 })
                     .alt('头像')
-                    .onError(() => {
-                      console.error('[UserCenterPage] 头像加载失败:', this.userInfo?.avatar);
+                    .onError((err: ImageError) => {
+                      console.error('[UserCenterPage] 头像加载失败:', this.userInfo?.avatar, err);
+                      this.avatarLoadFailed = true;
+                    })
+                    .onComplete(() => {
+                      console.info('[UserCenterPage] 头像加载成功:', this.userInfo?.avatar);
                     });
                 } else {
                   Text('👤')
